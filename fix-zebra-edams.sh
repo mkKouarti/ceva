@@ -82,12 +82,51 @@ EDAMS_LINK="$(ls -1 /dev/edams/peripheral_* 2>/dev/null | head -1 || true)"
 log "OK - ${LP_NODE} created"
 log "OK - ${EDAMS_LINK} -> $(readlink -f "${EDAMS_LINK}")"
 
-# 8. Self-test (optional, prints a small ZPL label)
+# 8. Verify the real print path before claiming success.
+#    The device node and symlink can be perfect while printing still fails,
+#    because the PrintServer Lambda targets the serial in its config file,
+#    not the live symlink. Check both before reporting OK.
+
+GGC="/greengrass/v2/bin/greengrass-cli"
+PERIPHERAL_CONFIG="/greengrass/peripheral_management/peripheral_configuration.json"
+
+# 8a. PrintServer component must be installed and RUNNING.
+if [ ! -x "${GGC}" ]; then
+    die "greengrass-cli not found. Greengrass is not installed/provisioned on this TC. A symlink fix cannot help; this device needs provisioning."
+fi
+
+PS_STATE="$("${GGC}" component list 2>/dev/null \
+    | grep -A1 'EdamsPrintServerDeviceLambda' \
+    | grep 'State:' | awk '{print $2}')"
+
+if [ "${PS_STATE}" != "RUNNING" ]; then
+    die "EdamsPrintServerDeviceLambda is '${PS_STATE:-ABSENT}', not RUNNING. The print components are not deployed/healthy. This device needs RE-PROVISIONING (empty or incomplete deployment), not a symlink fix."
+fi
+log "EdamsPrintServerDeviceLambda is RUNNING"
+
+# 8b. Config serial must match the printer physically attached.
+#     Derive the attached serial from the symlink name created above.
+ATTACHED_SERIAL="$(basename "${EDAMS_LINK}" | sed 's/^peripheral_//')"
+
+if [ ! -f "${PERIPHERAL_CONFIG}" ]; then
+    die "PrintServer is running but ${PERIPHERAL_CONFIG} is missing. Cannot map printer to port."
+fi
+
+if ! grep -q "${ATTACHED_SERIAL}" "${PERIPHERAL_CONFIG}"; then
+    CONFIG_SERIAL="$(grep -oE '"[0-9A-Za-z]{6,}":' "${PERIPHERAL_CONFIG}" | head -1 | tr -d '":')"
+    die "SERIAL MISMATCH. Attached printer is '${ATTACHED_SERIAL}' but ${PERIPHERAL_CONFIG} maps '${CONFIG_SERIAL}'. The Lambda writes to the wrong printer and printing WILL fail. Fix the config serial (provisioning used the wrong serial) and restart the component:
+  sudo ${GGC} component restart --names EdamsPrintServerDeviceLambda"
+fi
+log "Config serial matches attached printer (${ATTACHED_SERIAL})"
+
+# 8c. Optional self-test through the real path.
 if [ "${1:-}" = "--test" ]; then
     log "Sending self-test label"
     printf '^XA^FO50,50^A0N,50,50^FDEDAMS OK^FS^XZ' > "${EDAMS_LINK}"
     log "Self-test sent. Check printer output."
 fi
+
+log "Done. Device node, PrintServer, and config serial all verified."
 
 # 9. Verify PrintServer component is actually running before claiming success
 GGC="/greengrass/v2/bin/greengrass-cli"

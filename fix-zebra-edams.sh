@@ -89,4 +89,19 @@ if [ "${1:-}" = "--test" ]; then
     log "Self-test sent. Check printer output."
 fi
 
+# 9. Verify PrintServer component is actually running before claiming success
+GGC="/greengrass/v2/bin/greengrass-cli"
+if [ -x "${GGC}" ]; then
+    PS_STATE="$("${GGC}" component list 2>/dev/null \
+        | grep -A1 'EdamsPrintServerDeviceLambda' \
+        | grep 'State:' | awk '{print $2}')"
+    if [ "${PS_STATE}" != "RUNNING" ]; then
+        die "Device link OK, but EdamsPrintServerDeviceLambda is '${PS_STATE:-ABSENT}'. Printer will NOT print. Device needs re-provisioning (missing print components), not a symlink fix."
+    fi
+    log "EdamsPrintServerDeviceLambda RUNNING - print path complete."
+else
+    die "greengrass-cli not found. Greengrass not installed/provisioned on this TC."
+fi
+
+
 log "Done. EDAMS PrintServer should now print from ioprint."
